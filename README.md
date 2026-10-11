@@ -1,10 +1,8 @@
-# MSP Client Inventory Sync
+﻿# MSP Billing Sync
 
-Python automation I built to keep an MSP's Google Sheet up to date with each client's workstations, servers, and Microsoft 365 backup billing counts. The original ran unattended on a Windows VM hosted in AWS, using a batch file and Windows Task Scheduler.
+I built this Python automation to reconcile N-able RMM device counts and Cove Microsoft 365 billing data in an MSP's Google Sheets inventory. It ran unattended on an AWS-hosted Windows VM using Windows Task Scheduler and a batch file.
 
-This repository is an independent, sanitized demonstration of that workflow, not the original employer code. All sample clients are fictional.
-
-## How it worked
+## Workflow
 
 ```mermaid
 flowchart LR
@@ -16,51 +14,74 @@ flowchart LR
     F -.-> D
 ```
 
-Two Python scripts handled the work: one read the latest matching Cove billing email and generated a CSV from its HTML table; the other fetched N-able client inventory, matched `Partner reference` to client ID, and refreshed a Google Sheets worksheet. Task Scheduler ran the scripts on the VM.
+`gmail_billing.py` uses a Gmail search query to retrieve a Cove billing email and extract its HTML report table into a CSV. The report is read from the email body, not an attachment.
 
-The sheet tracked client name, servers, workstations, and `Total M365 billable users`. That last figure came from **Cove billing**, not a live audit of backup coverage. Missing values remained blank; unknown partner references were flagged.
+`inventory_sync.py` reads N-able client inventory XML and matches client IDs to the billing CSV's `Partner reference`, ignoring case and surrounding whitespace. It writes the reconciled inventory to a local CSV and optionally publishes it to Google Sheets.
 
-## Run the sample
+Clients without a billing match retain a blank M365 count. Billing references without an inventory match are reported in the console. Duplicate IDs and invalid counts cause the run to fail. M365 counts represent Cove billable users, not verified backup coverage.
 
-Python 3.10+.
+## Setup and sample run
+
+Use Python 3.10 or later. From the repository directory in PowerShell:
 
 ```powershell
-python -m pip install -r requirements.txt
-python gmail_billing.py --html samples/cove_email.html --output output/m365_billing.csv
-python inventory_sync.py --billing output/m365_billing.csv
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe gmail_billing.py --html samples/cove_email.html --output output/m365_billing.csv
+.\.venv\Scripts\python.exe inventory_sync.py --billing output/m365_billing.csv
 ```
 
-This processes a fictional billing email and N-able XML export without contacting any APIs. The resulting `output/client_inventory.csv` contains:
+These commands process the fictional billing email and `samples/clients.xml` without API calls or live credentials. The result is `output/client_inventory.csv`:
 
-| Client | Servers | Workstations | M365 billable users |
-| --- | ---: | ---: | ---: |
-| Beacon Architecture | 1 | 26 | 24 |
-| Birchwood Dental | 2 | 18 | 22 |
-| Cedarline Manufacturing | 4 | 42 | 48 |
-| North Ridge Realty | 0 | 11 | — |
+| Client ID | Client Name | Servers | Workstations | M365 Billable Users |
+| --- | --- | ---: | ---: | ---: |
+| 10001 | Beacon Architecture | 1 | 26 | 24 |
+| 10002 | Birchwood Dental | 2 | 18 | 22 |
+| 10003 | Cedarline Manufacturing | 4 | 42 | 48 |
+| 10004 | North Ridge Realty | 0 | 11 | |
 
-The sample includes an unmatched billing reference to demonstrate how missing client mappings are detected.
+The console also reports unmatched billing reference `19999`. To use other exports, pass `--inventory path/to/clients.xml` and `--billing path/to/billing.csv`. The billing CSV requires `Partner reference` and `Total M365 billable users` columns. Use `--exclude CLIENT_ID` to omit a client; repeat it for multiple clients. `--output` changes the CSV destination.
 
-## Running unattended on Windows
+Run the unit tests with:
 
-The included `run-sync.bat` is an **example of the original scheduling approach**, not a copy of the production task. It runs the Gmail-to-CSV step before the inventory-to-Sheets step and exits on failure.
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
 
-1. On the Windows VM, create a virtual environment and install the dependencies: `py -m venv .venv`, then `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
-2. Copy `config\run.local.example.bat` to `config\run.local.bat` and set your own values. The real configuration file is Git-ignored.
-3. Create a Google OAuth desktop-app client for Gmail read-only access. Sign in interactively once using the **same Windows account** that will run the scheduled task, so the stored token can be refreshed without opening a browser on every run. Store the OAuth client and token JSON outside the repository.
-4. Give a Google Sheets service account edit access to a dedicated worksheet. Set the spreadsheet ID, worksheet name and private service-account JSON path in the local config.
-5. Configure an N-able HTTPS client inventory endpoint and your Gmail search query. Make the query restrictive enough to identify the correct report, ideally including sender and subject.
-6. In Windows Task Scheduler, create a task for the chosen interval. Run `cmd.exe` with arguments `/c "C:\path\to\repo\run-sync.bat"`, under the configured account. Set the working directory and review Task Scheduler history/output when it fails.
+## Gmail and Google Sheets configuration
 
-The batch file executes each script in order. It won't publish a new sheet if email retrieval fails. To test the inventory synchronization without Gmail, run `inventory_sync.py` directly with `--billing path\to\report.csv`.
+Copy `config\run.local.example.bat` to `config\run.local.bat` and replace the placeholders. The local file is Git-ignored.
 
-For a live manual run, `inventory_sync.py --live --billing output/m365_billing.csv --publish` uses `NABLE_CLIENTS_URL` and the configured Google Sheets credentials. Use a **dedicated worksheet**: rows in columns A–E are replaced, and leftover cells are cleared. Sheet updates aren't transactional.
+| Setting | Purpose |
+| --- | --- |
+| `GMAIL_OAUTH_CLIENT_FILE` | Path to the Gmail OAuth desktop-app client JSON |
+| `GMAIL_TOKEN_FILE` | Path for the saved OAuth token |
+| `GMAIL_SEARCH_QUERY` | Gmail query identifying the Cove report; include sender and subject |
+| `GOOGLE_CREDENTIALS_FILE` | Path to the Google Sheets service-account JSON |
+| `GOOGLE_SHEET_ID` | Target spreadsheet ID |
+| `GOOGLE_WORKSHEET` | Existing worksheet name |
 
-## Notes
+Enable the Gmail and Google Sheets APIs in the relevant Google Cloud projects. Create an OAuth desktop-app client for Gmail read-only access and a Sheets service account with edit access to the target spreadsheet. Store credentials outside the repository, restrict access to the task's Windows account, and keep API keys and private exports out of version control.
 
-- The original Gmail script parsed an **HTML table inside the email** into a CSV; it didn't download an attached CSV file. The sample follows that implementation.
-- A failed or unrecognized email leaves the previous billing CSV intact. The scheduled batch exits before publishing, avoiding a silent refresh from stale data.
-- Both Gmail OAuth and Google Sheets service-account credentials must stay private. The N-able endpoint may contain an API key; don't commit it, or put private exports in the repository.
-- The live integrations and Windows/AWS scheduled run have not been tested as part of this public demo. The sample pipeline and unit tests run locally.
+For a manual run using Gmail and a saved N-able XML export, use Command Prompt:
 
-Run tests with `python -m unittest discover -s tests -v`.
+```bat
+call config\run.local.bat
+.venv\Scripts\python.exe gmail_billing.py --output output\m365_billing.csv
+```
+
+The first Gmail run opens a browser for authorization. Complete it under the Windows account that will run the scheduled task; subsequent runs can refresh the saved token. After the Gmail command succeeds, reconcile and publish:
+
+```bat
+.venv\Scripts\python.exe inventory_sync.py --inventory "C:\path\to\clients.xml" --billing output\m365_billing.csv --publish
+```
+
+Use a dedicated worksheet: publishing overwrites columns A-E from row 1, including headers, then clears obsolete rows in those columns. These operations are not transactional. Omit `--publish` to write only the local CSV.
+
+## Scheduled execution
+
+`run-sync.bat` sets the working directory, loads the local configuration, runs Gmail extraction, then calls inventory synchronization with `--live --publish`. It stops if either script fails. Failed email retrieval or parsing preserves the previous billing CSV without proceeding to publication.
+
+Live N-able retrieval is not configured: `--live` uses a hardcoded `API_URL` containing `YOUR_API_KEY` and ignores `NABLE_CLIENTS_URL` in the configuration example. The batch file requires this connection to be configured in the code before use. The manual workflow above uses a saved XML export.
+
+After a successful manual batch run, create a Windows scheduled task using `cmd.exe` with arguments `/c "C:\path\to\repo\run-sync.bat"`. Select the account used for Gmail authorization, set the desired interval, and enable execution while logged off. Check the task's exit status and capture console output for troubleshooting.
