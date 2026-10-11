@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+*.json
+*.pem
+*.key
+*.pickle
+output/
+config/*
+!config/run.local.example.bat
